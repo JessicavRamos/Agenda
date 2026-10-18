@@ -1,11 +1,16 @@
 "use strict";
 
 /* =====================================================================
-   Configuración: razas con precios, guías de la máquina y servicios
+   CATÁLOGOS: razas con precios, guías, servicios y logo del negocio
    ===================================================================== */
 
 let pestanaCat = "razas";
-const PESTANAS_CAT = { razas: "Razas y precios", guias: "Guías", servicios: "Servicios y recordatorios" };
+const PESTANAS_CAT = {
+  razas: "Razas y precios",
+  guias: "Guías",
+  servicios: "Servicios y recordatorios",
+  negocio: "Logo del negocio",
+};
 const SERVICIOS_FIJOS = Object.keys(COLUMNA_PRECIO); // Baño, Corte, Corte y baño
 
 // Guarda un solo campo editado en la tabla.
@@ -72,21 +77,23 @@ const numeroONulo = (id) => ($(id).value === "" ? null : Number($(id).value));
 async function pestanaRazas(caja) {
   const razas = await q(db.from("razas").select("*").order("especie").order("nombre"));
   caja.innerHTML = `
-    <p class="suave">Escribe aquí tus precios. Al cambiar una celda se guarda sola. El precio sugerido sale de esta lista.</p>
+    <p class="suave">Escribe aquí tus precios. Al cambiar una celda se guarda sola. El recargo medicado
+    (por ejemplo $8.000 o $16.000 según el tamaño) se suma cuando marcas "baño medicado".</p>
     <form id="nueva-raza" class="fila-nueva">
       <div><label for="r-nombre">Raza</label><input id="r-nombre" required></div>
       <div><label for="r-especie">Especie</label><select id="r-especie"><option value="perro">Perro</option><option value="gato">Gato</option></select></div>
       <div><label for="r-bano">Baño</label><input id="r-bano" type="number" min="0" step="any"></div>
       <div><label for="r-corte">Corte</label><input id="r-corte" type="number" min="0" step="any"></div>
       <div><label for="r-cb">Corte y baño</label><input id="r-cb" type="number" min="0" step="any"></div>
+      <div><label for="r-med">Recargo medicado</label><input id="r-med" type="number" min="0" step="any"></div>
       <div><button class="btn" type="submit">Agregar raza</button></div>
       <p class="error" role="alert"></p>
     </form>
-    <div class="tabla-scroll"><table><thead><tr><th>Raza</th><th>Especie</th><th>Baño</th><th>Corte</th><th>Corte y baño</th><th></th></tr></thead>
+    <div class="tabla-scroll"><table><thead><tr><th>Raza</th><th>Especie</th><th>Baño</th><th>Corte</th><th>Corte y baño</th><th>Recargo medicado</th><th></th></tr></thead>
     <tbody id="tabla-razas">${razas.map((r) => `<tr data-id="${r.id}">
       <td><input data-campo="nombre" value="${esc(r.nombre)}" aria-label="Nombre de la raza"></td>
       <td>${esc(r.especie)}</td>
-      ${["precio_bano", "precio_corte", "precio_corte_bano"].map((c) =>
+      ${["precio_bano", "precio_corte", "precio_corte_bano", "recargo_medicado"].map((c) =>
         `<td><input data-campo="${c}" type="number" min="0" step="any" value="${esc(r[c])}" aria-label="${c}"></td>`).join("")}
       <td><button class="btn alt" data-quitar="${r.id}">Quitar</button></td></tr>`).join("")}</tbody></table></div>`;
 
@@ -101,6 +108,7 @@ async function pestanaRazas(caja) {
       precio_bano: numeroONulo("#r-bano"),
       precio_corte: numeroONulo("#r-corte"),
       precio_corte_bano: numeroONulo("#r-cb"),
+      recargo_medicado: numeroONulo("#r-med"),
     }, evento.target);
   });
 }
@@ -179,7 +187,57 @@ async function pestanaServicios(caja) {
   });
 }
 
-const CARGADORES_CAT = { razas: pestanaRazas, guias: pestanaGuias, servicios: pestanaServicios };
+/* ---------- Logo del negocio ---------- */
+const TIPOS_LOGO = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/svg+xml": "svg" };
+
+async function subirLogo(evento) {
+  evento.preventDefault();
+  const error = $("#l-error");
+  error.textContent = "";
+  const archivo = $("#l-archivo").files[0];
+  if (!archivo) return;
+  const extension = TIPOS_LOGO[archivo.type];
+  if (!extension) { error.textContent = "Usa una imagen PNG, JPG, WEBP o SVG."; return; }
+  if (archivo.size > 2 * 1024 * 1024) { error.textContent = "La imagen pesa más de 2 MB. Usa una más liviana."; return; }
+  const boton = $("button[type=submit]", evento.target);
+  boton.disabled = true;
+  boton.textContent = "Subiendo…";
+  try {
+    const nombre = `logo-${Date.now()}.${extension}`;
+    const { error: fallo } = await db.storage.from("logo")
+      .upload(nombre, archivo, { contentType: archivo.type, cacheControl: "31536000" });
+    if (fallo) throw fallo;
+    // Se borran los logos anteriores para no acumular archivos.
+    const { data } = await db.storage.from("logo").list("", { limit: 100 });
+    const viejos = (data || []).map((f) => f.name).filter((n) => /^logo-/.test(n) && n !== nombre);
+    if (viejos.length) await db.storage.from("logo").remove(viejos);
+    await cargarLogo();
+    aviso("Logo actualizado.");
+    pintar();
+  } catch (fallo) {
+    error.textContent = mensajeError(fallo);
+    boton.disabled = false;
+    boton.textContent = "Subir logo";
+  }
+}
+
+async function pestanaNegocio(caja) {
+  caja.innerHTML = `
+    <p class="suave">Sube el logo de ${esc(NOMBRE_NEGOCIO)}. Se verá en la pantalla de entrada y en el menú.
+    Funciona mejor una imagen cuadrada o redonda, con fondo transparente (PNG).</p>
+    <div class="logo-vista">${estado.logoUrl
+      ? `<img src="${esc(estado.logoUrl)}" alt="Logo actual">`
+      : '<p class="suave">Todavía no has subido un logo.</p>'}</div>
+    <form id="form-logo">
+      <label for="l-archivo">Imagen (PNG, JPG, WEBP o SVG; máximo 2 MB)</label>
+      <input id="l-archivo" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" required>
+      <p id="l-error" class="error" role="alert"></p>
+      <button class="btn" type="submit">Subir logo</button>
+    </form>`;
+  $("#form-logo").addEventListener("submit", subirLogo);
+}
+
+const CARGADORES_CAT = { razas: pestanaRazas, guias: pestanaGuias, servicios: pestanaServicios, negocio: pestanaNegocio };
 
 async function cargarCatalogos() {
   const caja = $("#cat-contenido");
@@ -192,8 +250,8 @@ async function cargarCatalogos() {
 }
 
 PANTALLAS.catalogos = {
-  html: () => `<h1>Configuración</h1>
-    <p class="suave">Tu lista de precios por raza, las guías de la máquina y los servicios.</p>
+  html: () => `<h1>Catálogos</h1>
+    <p class="suave">Tu lista de precios por raza, las guías de la máquina, los servicios y el logo.</p>
     <div class="tarjeta">
       <div class="filtros">${Object.entries(PESTANAS_CAT).map(([clave, texto]) =>
         `<button class="chip" data-pestana="${clave}" aria-pressed="${clave === pestanaCat}">${texto}</button>`).join("")}</div>
